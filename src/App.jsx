@@ -1,9 +1,204 @@
-import { useEffect, useMemo, useState } from "react";
-import CityPicker from "./components/CityPicker.jsx";
-import { CandidateCard, Resumo } from "./components/Resultado.jsx";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CARGOS, UFS, electionFor, fotoUrl, getJSON, loadConfig, loadMunicipios, parseResultado, resultadoPath,
+  fmtInt, fmtPct,
 } from "./lib/tse.js";
+
+/* ===================== Seletor de cidade ===================== */
+
+const norm = (s) => s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+
+function CityPicker({ municipios, value, onChange, disabled, loading }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [active, setActive] = useState(0);
+  const boxRef = useRef(null);
+
+  const atual = municipios.find((m) => m.cd === value);
+
+  const lista = useMemo(() => {
+    const q = norm(query.trim());
+    const filtrados = q ? municipios.filter((m) => norm(m.nome).includes(q)) : municipios;
+    return [{ cd: "", nome: "Todas as cidades" }, ...filtrados].slice(0, 80);
+  }, [municipios, query]);
+
+  useEffect(() => {
+    const fechar = (e) => !boxRef.current?.contains(e.target) && setOpen(false);
+    document.addEventListener("pointerdown", fechar);
+    return () => document.removeEventListener("pointerdown", fechar);
+  }, []);
+
+  useEffect(() => setActive(0), [query]);
+
+  const escolher = (m) => {
+    onChange(m.cd);
+    setQuery("");
+    setOpen(false);
+  };
+
+  const onKeyDown = (e) => {
+    if (e.key === "ArrowDown") { e.preventDefault(); setOpen(true); setActive((i) => Math.min(i + 1, lista.length - 1)); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setActive((i) => Math.max(i - 1, 0)); }
+    else if (e.key === "Enter" && open) { e.preventDefault(); lista[active] && escolher(lista[active]); }
+    else if (e.key === "Escape") setOpen(false);
+  };
+
+  return (
+    <div ref={boxRef} className="relative">
+      <label htmlFor="cidade" className="mb-1 block text-xs font-semibold text-slate-500">Município</label>
+      <input
+        id="cidade"
+        role="combobox"
+        aria-expanded={open}
+        aria-controls="cidade-lista"
+        autoComplete="off"
+        disabled={disabled}
+        placeholder={disabled ? "Selecione um estado" : loading ? "Carregando cidades…" : atual?.nome || "Todas as cidades"}
+        value={query}
+        onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
+        onFocus={() => setOpen(true)}
+        onKeyDown={onKeyDown}
+        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm placeholder:text-slate-800 focus:border-marinho-2 focus:outline-none focus:ring-2 focus:ring-marinho-2/30 disabled:bg-slate-100 disabled:placeholder:text-slate-400"
+      />
+      {open && !disabled && (
+        <ul
+          id="cidade-lista"
+          role="listbox"
+          className="absolute z-20 mt-1 max-h-72 w-full overflow-auto rounded-lg border border-slate-200 bg-white py-1 shadow-lg"
+        >
+          {lista.map((m, i) => (
+            <li
+              key={m.cd || "todas"}
+              role="option"
+              aria-selected={m.cd === value}
+              onPointerDown={(e) => { e.preventDefault(); escolher(m); }}
+              onMouseEnter={() => setActive(i)}
+              className={`cursor-pointer px-3 py-2 text-sm ${i === active ? "bg-ceu" : ""} ${m.cd === value ? "font-semibold text-marinho" : ""}`}
+            >
+              {m.nome}
+            </li>
+          ))}
+          {lista.length === 1 && query && (
+            <li className="px-3 py-2 text-sm text-slate-500">Nenhuma cidade com esse nome.</li>
+          )}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/* ===================== Resultado ===================== */
+
+function Foto({ src, nome }) {
+  const [erro, setErro] = useState(false);
+  const iniciais = nome.split(/\s+/).filter(Boolean).slice(0, 2).map((p) => p[0]).join("");
+  if (!src || erro) {
+    return (
+      <div className="grid size-14 shrink-0 place-items-center rounded-full bg-ceu text-base font-bold text-marinho sm:size-16">
+        {iniciais}
+      </div>
+    );
+  }
+  return (
+    <img
+      src={src}
+      alt=""
+      loading="lazy"
+      onError={() => setErro(true)}
+      className="size-14 shrink-0 rounded-full bg-ceu object-cover sm:size-16"
+    />
+  );
+}
+
+function Status({ texto }) {
+  if (!texto || /não eleito/i.test(texto)) return null;
+  const eleito = /eleito/i.test(texto);
+  return (
+    <span
+      className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${
+        eleito ? "bg-verde text-white" : "bg-amber-100 text-amber-800"
+      }`}
+    >
+      {texto}
+    </span>
+  );
+}
+
+function CandidateCard({ c, posicao, foto, destaque }) {
+  return (
+    <li
+      className={`flex items-center gap-3 rounded-xl border bg-white p-3 sm:gap-4 sm:p-4 ${
+        destaque ? "border-marinho-2 ring-1 ring-marinho-2/20" : "border-slate-200"
+      }`}
+    >
+      <span className="w-6 text-center text-sm font-bold text-slate-400">{posicao}º</span>
+      <Foto src={foto} nome={c.nome} />
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <p className="truncate font-bold text-slate-900">{c.nome}</p>
+          <Status texto={c.status} />
+        </div>
+        <p className="text-xs text-slate-500">
+          {c.numero}
+          {c.partido && <> | {c.partido}</>}
+          {c.vice && <> | Vice: {c.vice}</>}
+        </p>
+        <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-100">
+          <div className="h-full rounded-full bg-marinho-2 transition-[width] duration-700" style={{ width: `${Math.min(c.pct, 100)}%` }} />
+        </div>
+      </div>
+      <div className="shrink-0 text-right">
+        <p className="text-xl font-extrabold text-marinho sm:text-2xl">{fmtPct(c.pct)}</p>
+        <p className="text-xs text-slate-500">{fmtInt(c.votos)} votos</p>
+      </div>
+    </li>
+  );
+}
+
+function Dado({ rotulo, valor, pct }) {
+  return (
+    <div className="rounded-lg bg-slate-50 px-3 py-2">
+      <p className="text-xs text-slate-500">{rotulo}</p>
+      <p className="font-bold text-slate-900">{fmtInt(valor)}</p>
+      {pct != null && <p className="text-xs text-slate-500">{fmtPct(pct)}</p>}
+    </div>
+  );
+}
+
+function Resumo({ r, local }) {
+  const secoes = r.secoes ?? 0;
+  return (
+    <section className="rounded-xl border border-slate-200 bg-white p-4">
+      <div className="flex flex-wrap items-end justify-between gap-2">
+        <div>
+          <p className="text-sm text-slate-500">{local}</p>
+          <p className="text-3xl font-extrabold text-marinho">
+            {fmtPct(secoes)} <span className="text-base font-semibold text-slate-600">das seções totalizadas</span>
+          </p>
+        </div>
+        {r.atualizado && <p className="text-xs text-slate-500">Atualizado em {r.atualizado}</p>}
+      </div>
+      <div
+        className="mt-3 h-3 overflow-hidden rounded-full bg-slate-100"
+        role="progressbar"
+        aria-valuenow={Math.round(secoes)}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-label="Seções totalizadas"
+      >
+        <div className="h-full rounded-full bg-verde transition-[width] duration-700" style={{ width: `${secoes}%` }} />
+      </div>
+      <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <Dado rotulo="Votos válidos" valor={r.validos} pct={r.pctValidos} />
+        <Dado rotulo="Brancos" valor={r.brancos} pct={r.pctBrancos} />
+        <Dado rotulo="Nulos" valor={r.nulos} pct={r.pctNulos} />
+        <Dado rotulo="Abstenção" valor={r.abstencao} pct={r.pctAbstencao} />
+      </div>
+    </section>
+  );
+}
+
+/* ===================== App ===================== */
 
 const INTERVALO = 30_000;
 const params = new URLSearchParams(location.search);
